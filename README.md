@@ -113,6 +113,28 @@ Files: settings and presets in `~/.config/tofu-eq/`, the service in `~/.config/s
 ~/.local/share/tofu-eq/install.sh --purge       # removes everything
 ```
 
+### Caveats
+
+Uninstalling leaves system-wide Python packages, that were installed with the standard installation.
+
+## Alternative installation options
+
+Both options keep dependencies separate from system Python.
+
+### venv install
+
+```sh
+make install-venv  # installs app with its own .venv
+```
+
+### Standalone build & install
+
+```sh
+make build               # builds standalone app using Nuitka
+make install-standalone  # installs built standalone app
+```
+
+
 ## Troubleshooting
 
 <details>

@@ -14,7 +14,7 @@ APP = 'tofu-eq'
 UNIT = f'{APP}-filter.service'
 SYSTEM_TOOLS = (
     'bash', 'cat', 'chmod', 'cp', 'dirname', 'find', 'gzip', 'head', 'mkdir',
-    'mktemp', 'rm', 'sed', 'sort', 'tail', 'tar', 'uname',
+    'mktemp', 'mv', 'rm', 'sed', 'sort', 'tail', 'tar', 'uname',
 )
 
 
@@ -109,10 +109,7 @@ esac''')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
-    def _assert_installed(self) -> None:
-        module = Path('tofu_eq/__main__.py')
-        self.assertEqual((self.prefix / 'app' / module).read_bytes(),
-                         (ROOT / module).read_bytes())
+    def _assert_desktop_integration(self) -> None:
         saved_installer = self.prefix / INSTALLER.name
         self.assertEqual(saved_installer.read_bytes(), INSTALLER.read_bytes())
         self.assertTrue(os.access(saved_installer, os.X_OK))
@@ -120,6 +117,28 @@ esac''')
                       self.desktop.read_text(encoding='utf-8').splitlines())
         self.assertEqual(self.icon.read_bytes(),
                          (ROOT / 'data' / self.icon.name).read_bytes())
+
+    def _assert_installed(self) -> None:
+        module = Path('tofu_eq/__main__.py')
+        self.assertEqual((self.prefix / 'app' / module).read_bytes(),
+                         (ROOT / module).read_bytes())
+        self._assert_desktop_integration()
+
+    def _make_standalone_dist(self) -> Path:
+        dist = self.sandbox / 'standalone dist'
+        shutil.copytree(ROOT / 'data', dist / 'data')
+        executable = dist / APP
+        executable.write_text(
+            '#!/bin/sh\n'
+            'if [ "$1" = --version ]; then echo "tofu-eq test"; exit 0; fi\n'
+            '[ -f "${0%/*}/lib/runtime.so" ] || exit 1\n'
+            'printf "%s\\n" "$0" "$@"\n',
+            encoding='utf-8',
+        )
+        executable.chmod(0o755)
+        (dist / 'lib').mkdir()
+        (dist / 'lib/runtime.so').touch()
+        return dist
 
     def _remove_installed_app(self, option: str) -> None:
         self._run('bash', str(INSTALLER), '--no-deps')
@@ -165,6 +184,61 @@ esac''')
         ])
         self.assertEqual(self._run(str(self.launcher)).splitlines()[0],
                          str(self.venv_python))
+
+    def test_standalone_installs_and_uninstalls_without_python(self) -> None:
+        dist = self._make_standalone_dist()
+        self.system_python.unlink()
+
+        self._run('bash', str(INSTALLER), '--standalone', str(dist))
+        shutil.rmtree(dist)
+
+        self._assert_desktop_integration()
+        self.assertFalse(self.venv_python.exists())
+        self.assertFalse(self.python_setup_calls.exists())
+        output = self._run(str(self.launcher), '--example', 'two words')
+        self.assertEqual(output.splitlines(), [str(self.prefix / 'app' / APP),
+                                               '--example', 'two words'])
+        self._run(str(self.prefix / INSTALLER.name), '--uninstall')
+        for path in (self.prefix, self.launcher, self.desktop, self.icon):
+            self.assertFalse(path.exists(), path)
+
+    def test_switches_between_venv_and_standalone_preserving_presets(self) -> None:
+        dist = self._make_standalone_dist()
+        self.preset.parent.mkdir(parents=True)
+        self.preset.write_text('preset', encoding='utf-8')
+        self._run('bash', str(INSTALLER), '--venv')
+
+        self._run('bash', str(INSTALLER), '--standalone', str(dist))
+
+        app_dir = self.prefix / 'app'
+        self.assertFalse((app_dir / 'tofu_eq').exists())
+        self.assertEqual(self._run(str(self.launcher), '--version').strip(), 'tofu-eq test')
+        self.assertEqual(self.preset.read_text(encoding='utf-8'), 'preset')
+
+        self._run('bash', str(INSTALLER), '--venv')
+
+        self._assert_installed()
+        self.assertFalse((app_dir / APP).exists())
+        self.assertEqual(self._run(str(self.launcher)).splitlines()[0],
+                         str(self.venv_python))
+        self.assertEqual(self.preset.read_text(encoding='utf-8'), 'preset')
+
+    def test_missing_standalone_build_preserves_existing_installation(self) -> None:
+        self._run('bash', str(INSTALLER), '--no-deps')
+        result = subprocess.run(
+            ('bash', str(INSTALLER), '--standalone', str(self.sandbox / 'missing')),
+            cwd=self.sandbox,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Run make build', result.stderr)
+        self._assert_installed()
+        self.assertEqual(self._run(str(self.launcher)).splitlines()[0],
+                         str(self.system_python))
 
     def test_auto_uses_system_python_when_dependencies_are_available(self) -> None:
         self.env['SYSTEM_DEPS_AVAILABLE'] = '1'
