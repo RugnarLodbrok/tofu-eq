@@ -200,6 +200,8 @@ write_launcher() {
     local python="$1"
     printf '#!/bin/bash\n'
     if [ -n "$python" ]; then
+        # Expand PYTHONPATH when the generated launcher runs.
+        # shellcheck disable=SC2016
         printf 'export PYTHONPATH=%q${PYTHONPATH:+:$PYTHONPATH}\n' "$APP_DIR"
         printf 'exec %q -m tofu_eq "$@"\n' "$python"
     else
