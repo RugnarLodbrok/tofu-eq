@@ -8,6 +8,7 @@
 #   --purge       remove Tofu EQ and ~/.config/tofu-eq
 #   --venv        install Python deps into a private venv instead of using distro packages
 #   --no-deps     don't install any Python dependencies
+#   --standalone DIR  install a built standalone distribution
 set -euo pipefail
 
 REPO="AoTofu/tofu-eq"
@@ -15,6 +16,7 @@ REF="${TOFU_EQ_REF:-main}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 PREFIX="$DATA_HOME/tofu-eq"
+APP_DIR="$PREFIX/app"
 BIN_DIR="$HOME/.local/bin"
 APPS_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
@@ -69,8 +71,8 @@ check_system() {
     step "Checking your system"
     [ "$(uname -s)" = Linux ] || die "Tofu EQ only runs on Linux."
     [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not root (it installs into your home directory)."
-    for cmd in python3 pw-cli pw-dump pw-record pw-link systemctl; do
-        have "$cmd" || die "'$cmd' not found. Tofu EQ needs PipeWire, systemd and Python 3."
+    for cmd in pw-cli pw-dump pw-record pw-link systemctl; do
+        have "$cmd" || die "'$cmd' not found. Tofu EQ needs PipeWire and systemd."
     done
     pw-cli info 0 >/dev/null 2>&1 || die "PipeWire doesn't seem to be running for this user."
 
@@ -87,6 +89,10 @@ check_system() {
         warn "WirePlumber ${wp_version:-not found} is older than 0.5: the EQ won't insert itself automatically."
         warn "Pick \"Tofu EQ\" as your output device in your sound settings instead."
     fi
+}
+
+check_python() {
+    have python3 || die "'python3' not found. Installing from source requires Python 3.9 or newer."
     python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "Python 3.9 or newer is required."
     ok "Python $(python3 -c 'import platform; print(platform.python_version())')"
 }
@@ -183,31 +189,89 @@ find_source() {
     SOURCE_DIR="$(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 }
 
-install_app() {
-    local source_dir="$1"
-    local python="$2"
-    local version
+check_standalone() {
+    local dist_dir="$1"
+    [ -f "$dist_dir/tofu-eq" ] && [ -x "$dist_dir/tofu-eq" ] &&
+        [ -f "$dist_dir/data/tofu-eq.desktop" ] && [ -f "$dist_dir/data/tofu-eq.svg" ] ||
+        die "Standalone build missing or incomplete at '$dist_dir'. Run make build or provide a complete build directory."
+}
+
+write_launcher() {
+    local python="$1"
+    printf '#!/bin/bash\n'
+    if [ -n "$python" ]; then
+        # Expand PYTHONPATH when the generated launcher runs.
+        # shellcheck disable=SC2016
+        printf 'export PYTHONPATH=%q${PYTHONPATH:+:$PYTHONPATH}\n' "$APP_DIR"
+        printf 'exec %q -m tofu_eq "$@"\n' "$python"
+    else
+        printf 'exec %q "$@"\n' "$APP_DIR/tofu-eq"
+    fi
+}
+
+write_desktop_entry() {
+    local assets_dir="$1"
+    local exec_path="$BIN_DIR/tofu-eq"
+    if [[ "$exec_path" == *[[:space:]]* ]]; then
+        exec_path="\"$exec_path\""
+    fi
+    exec_path="${exec_path//\\/\\\\}"
+    exec_path="${exec_path//&/\\&}"
+    exec_path="${exec_path//|/\\|}"
+    sed "s|^Exec=.*|Exec=$exec_path|" "$assets_dir/tofu-eq.desktop"
+}
+
+activate_app() {
+    local staging_dir="$1"
+
+    if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; then
+        mv -T -- "$APP_DIR" "$staging_dir/previous"
+    fi
+    if mv -T -- "$staging_dir/app" "$APP_DIR" &&
+        mv -fT -- "$staging_dir/tofu-eq" "$BIN_DIR/tofu-eq"; then
+        return
+    fi
+    if [ ! -d "$staging_dir/app" ]; then
+        mv -T -- "$APP_DIR" "$staging_dir/app" || trap - EXIT
+    fi
+    if [ -e "$staging_dir/previous" ] || [ -L "$staging_dir/previous" ]; then
+        mv -T -- "$staging_dir/previous" "$APP_DIR" || trap - EXIT
+    fi
+    die "Could not activate the installation at '$APP_DIR'."
+}
+
+install_app() (
+    local source_dir="$1" installer="$2" python="${3:-}"
+    local staging_dir version
 
     mkdir -p "$PREFIX" "$BIN_DIR" "$APPS_DIR" "$ICON_DIR"
-    rm -rf "$PREFIX/app"
-    mkdir -p "$PREFIX/app"
-    cp -r "$source_dir/tofu_eq" "$PREFIX/app/"
-    find "$PREFIX/app" -name __pycache__ -prune -exec rm -rf {} +
-    cp "$source_dir/install.sh" "$PREFIX/install.sh" && chmod +x "$PREFIX/install.sh"
-    version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$source_dir/tofu_eq/__init__.py")"
-    ok "Tofu EQ $version → $PREFIX/app"
+    staging_dir="$(mktemp -d "$PREFIX/.install.XXXXXX")"
+    trap 'rm -rf -- "$staging_dir"' EXIT
+    mkdir "$staging_dir/app"
+    if [ -n "$python" ]; then
+        cp -r "$source_dir/tofu_eq" "$staging_dir/app/"
+        find "$staging_dir/app" -name __pycache__ -prune -exec rm -rf {} +
+        version="Tofu EQ $(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$source_dir/tofu_eq/__init__.py")"
+    else
+        cp -a -- "$source_dir/." "$staging_dir/app/"
+        version="$("$staging_dir/app/tofu-eq" --version)" ||
+            die "The standalone binary could not run on this system."
+    fi
+    cp -- "$installer" "$staging_dir/install.sh"
+    cp -- "$source_dir/data/tofu-eq.svg" "$staging_dir/tofu-eq.svg"
+    write_launcher "$python" > "$staging_dir/tofu-eq"
+    write_desktop_entry "$source_dir/data" > "$staging_dir/tofu-eq.desktop"
+    chmod +x "$staging_dir/install.sh" "$staging_dir/tofu-eq"
 
-    cat > "$BIN_DIR/tofu-eq" <<EOF
-#!/bin/sh
-PYTHONPATH="$PREFIX/app\${PYTHONPATH:+:\$PYTHONPATH}" exec "$python" -m tofu_eq "\$@"
-EOF
-    chmod +x "$BIN_DIR/tofu-eq"
-    sed "s|^Exec=.*|Exec=$BIN_DIR/tofu-eq|" "$source_dir/data/tofu-eq.desktop" > "$APPS_DIR/tofu-eq.desktop"
-    cp "$source_dir/data/tofu-eq.svg" "$ICON_DIR/tofu-eq.svg"
+    mv -fT -- "$staging_dir/install.sh" "$PREFIX/install.sh"
+    mv -fT -- "$staging_dir/tofu-eq.desktop" "$APPS_DIR/tofu-eq.desktop"
+    mv -fT -- "$staging_dir/tofu-eq.svg" "$ICON_DIR/tofu-eq.svg"
+    activate_app "$staging_dir"
     refresh_menus
+    ok "$version → $APP_DIR"
     ok "launcher: $BIN_DIR/tofu-eq"
     ok "app menu entry: Tofu EQ"
-}
+)
 
 print_install_summary() {
     echo
@@ -222,33 +286,49 @@ print_install_summary() {
 }
 
 main() {
-    local mode=install deps=auto arg
+    local mode=install deps=auto standalone_dir=""
+    local installer="${BASH_SOURCE[0]:-}"
 
     init_colors
-    for arg in "$@"; do
-        case "$arg" in
+    while (( $# > 0 )); do
+        case "$1" in
             --uninstall) mode=uninstall ;;
             --purge) mode=purge ;;
             --venv) deps=venv ;;
             --no-deps) deps=none ;;
+            --standalone)
+                [[ -n "${2:-}" && "$2" != --* ]] || die "--standalone requires a build directory."
+                standalone_dir="$2"
+                shift ;;
             -h|--help)
-                sed -n '2,12p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
+                sed -n '2,11p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
                 exit 0 ;;
-            *) die "unknown option: $arg" ;;
+            *) die "unknown option: $1" ;;
         esac
+        shift
     done
 
+    if [ -n "$standalone_dir" ]; then
+        [[ "$mode" == install && "$deps" == auto ]] || die "--standalone cannot be combined with other install or removal modes."
+        check_standalone "$standalone_dir"
+        [ -f "$installer" ] || die "Run install.sh from a file when using --standalone."
+    fi
     if [ "$mode" != install ]; then
         uninstall "$mode"
         exit 0
     fi
 
     check_system
-    install_dependencies "$deps"
-
-    step "Installing Tofu EQ"
-    find_source
-    install_app "$SOURCE_DIR" "$PYTHON"
+    if [ -n "$standalone_dir" ]; then
+        step "Installing standalone Tofu EQ"
+        install_app "$standalone_dir" "$installer"
+    else
+        check_python
+        install_dependencies "$deps"
+        step "Installing Tofu EQ"
+        find_source
+        install_app "$SOURCE_DIR" "$SOURCE_DIR/install.sh" "$PYTHON"
+    fi
     print_install_summary
 }
 

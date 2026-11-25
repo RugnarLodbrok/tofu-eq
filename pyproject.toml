@@ -28,6 +28,12 @@ Issues = "https://github.com/AoTofu/tofu-eq/issues"
 [project.gui-scripts]
 tofu-eq = "tofu_eq.__main__:main"
 
+[dependency-groups]
+standalone = [
+    "nuitka==4.3.5",
+    "patchelf==0.19.3.0; sys_platform == 'linux'",
+]
+
 [tool.setuptools]
 packages = ["tofu_eq"]
 

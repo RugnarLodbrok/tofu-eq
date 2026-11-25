@@ -113,6 +113,27 @@ flowchart LR
 ~/.local/share/tofu-eq/install.sh --purge       # すべて削除
 ```
 
+### 注意事項
+
+標準のインストールでシステム全体に追加された Python パッケージは、アンインストール後も残ります。
+
+## 別のインストール方法
+
+どちらの方法でも、依存関係はシステムの Python 環境と分離されます。
+
+### venv を使ったインストール
+
+```sh
+make install-venv  # 専用の仮想環境にアプリをインストール
+```
+
+### スタンドアロン版のビルドとインストール
+
+```sh
+make build               # Nuitka でスタンドアロン版をビルド
+make install-standalone  # ビルド済みのスタンドアロン版をインストール
+```
+
 ## トラブルシューティング
 
 <details>

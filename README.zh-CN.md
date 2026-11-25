@@ -113,6 +113,27 @@ flowchart LR
 ~/.local/share/tofu-eq/install.sh --purge       # 全部删除
 ```
 
+### 注意事项
+
+卸载后，标准安装过程中添加的系统级 Python 软件包会保留。
+
+## 其他安装方式
+
+这两种方式都将依赖项与系统 Python 环境隔离。
+
+### 使用 venv 安装
+
+```sh
+make install-venv  # 将应用安装到专用的虚拟环境中
+```
+
+### 构建并安装独立版
+
+```sh
+make build               # 使用 Nuitka 构建独立版
+make install-standalone  # 安装已构建的独立版
+```
+
 ## 常见问题
 
 <details>
